@@ -1,102 +1,219 @@
-const express = require("express");
-const axios = require("axios");
-const crypto = require("crypto");
-require("dotenv").config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const axios = require('axios');
+const crypto = require('crypto');
+const dotenv = require('dotenv');
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 const port = 3000;
 
-app.use(express.json());
+// Middleware to parse JSON bodies
+app.use(bodyParser.json());
 
-function generateSignature(amount, currencyCode, reference, accountNumber) {
-  const data = `${amount}${currencyCode}${reference}${accountNumber}`;
-  return data;
-  //   return crypto.createHash("sha256").update(data).digest("hex");
-}
-
-app.post("/donate", async (req, res) => {
-  try {
+app.post('/donate', async (req, res) => {
     const { amount, donorName, donorPhone } = req.body;
-
-    const tokenResponse = await axios.post(
-      "https://uat.finserve.africa/authentication/api/v3/authenticate/merchant",
-      {
-        merchantCode: process.env.MERCHANT_CODE,
-        consumerSecret: process.env.JENGA_CONSUMER_SECRET,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Api-Key": process.env.JENGA_API_KEY,
+  
+    try {
+      // Step 1: Get the OAuth token from Jenga API
+      const tokenResponse = await axios.post(
+        'https://uat.finserve.africa/authentication/api/v3/authenticate/merchant',
+        {
+          merchantCode: process.env.MERCHANT_CODE,
+          consumerSecret: process.env.JENGA_CONSUMER_SECRET,
         },
-      }
-    );
-
-    const accessToken = tokenResponse.data.accessToken;
-
-    const sourceAccountNumber = process.env.JENGA_ACCOUNT_NUMBER;
-    const destinationMobileNumber = donorPhone;
-    const reference = "S001946981113"; // Example reference
-    const currencyCode = process.env.CURRENCY;
-    const callbackUrl = "http://localhost:3000/handle-callback";
-
-    const signature = generateSignature(
-      amount,
-      currencyCode,
-      reference,
-      sourceAccountNumber
-    );
-
-    const payload = {
-      source: {
-        countryCode: "KE",
-        name: "Security Test",
-        accountNumber: sourceAccountNumber,
-      },
-      destination: {
-        type: "mobile",
-        countryCode: "KE",
-        name: donorName,
-        mobileNumber: destinationMobileNumber,
-        walletName: "Mpesa",
-      },
-      transfer: {
-        type: "MobileWallet",
-        amount: amount,
-        currencyCode: currencyCode,
-        reference: reference,
-        date: new Date().toISOString().split("T")[0],
-        description: "Donation",
-        callbackUrl: callbackUrl,
-      },
-    };
-
-    const paymentResponse = await axios.post(
-      "https://uat.finserve.africa/v3-apis/transaction-api/v3.0/remittance/sendmobile",
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          signature: signature,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Api-Key': process.env.JENGA_API_KEY,
+          },
+        }
+      );
+  
+      const accessToken = tokenResponse.data.accessToken;
+  
+      // Step 2: Generate the order reference
+      const orderReference = `ORD-${Date.now()}`;
+  
+      // Step 3: Create the payment request
+      const paymentResponse = await axios.post(
+        'https://v3-uat.jengapgw.io/processPayment',
+        {
+          token: accessToken,
+          merchantCode: process.env.MERCHANT_CODE,
+          currency: 'KES',
+          orderAmount: amount,
+          orderReference: orderReference,
+          productType: 'Donation',
+          productDescription: 'Donation Description',
+          paymentTimeLimit: '15mins',
+          customerFirstName: donorName.split(' ')[0],
+          customerLastName: donorName.split(' ')[1] || '',
+          customerPostalCodeZip: '00100',
+          customerAddress: '123 Tom Mboya Street, Nairobi',
+          customerEmail: 'donor@example.com',
+          customerPhone: donorPhone,
+          callbackUrl: 'http://localhost:3000/callback',
+          countryCode: 'KE',
+          secondaryReference: 'SecRef123',
+          signature: `${process.env.MERCHANT_CODE}${orderReference}KES${amount}http://localhost:3000/callback`,
         },
-      }
-    );
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+  
+      res.json({
+        success: true,
+        message: 'Donation processed successfully',
+        data: paymentResponse.data,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Error processing donation',
+        error: error.message,
+      });
+    }
+  });
+  
 
-    res.json({
+// Endpoint to handle M-Pesa Paybill payment data
+app.post('/paybill', async (req, res) => {
+  const { amount, accountNumber, phoneNumber } = req.body;
+
+  try {
+    // Process Paybill data (e.g., integrate with M-Pesa API)
+    res.status(200).json({
       success: true,
-      message: "Donation processed successfully",
-      data: paymentResponse.data,
+      message: 'Paybill payment processed successfully',
+      data: { amount, accountNumber, phoneNumber },
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Error processing donation",
-      error: error.response ? error.response.data : error.message,
+      message: 'Error processing Paybill payment',
+      error: error.message,
     });
   }
 });
 
+// Endpoint to validate bill payments
+app.post('/api/bill-validation', async (req, res) => {
+  const { billId, amount } = req.body;
+
+  try {
+    // Validate bill payment (e.g., check against database or API)
+    res.status(200).json({
+      success: true,
+      message: 'Bill payment validated successfully',
+      data: { billId, amount },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error validating bill payment',
+      error: error.message,
+    });
+  }
+});
+
+// Endpoint to handle bill notifications
+app.post('/api/bill-notification', async (req, res) => {
+  const { billId, status, amount } = req.body;
+
+  try {
+    // Handle bill notification (e.g., update database or notify user)
+    res.status(200).json({
+      success: true,
+      message: 'Bill notification received successfully',
+      data: { billId, status, amount },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error handling bill notification',
+      error: error.message,
+    });
+  }
+});
+
+// Endpoint to query transaction details by reference
+app.get('/api/transaction-query/:reference', async (req, res) => {
+  const { reference } = req.params;
+
+  try {
+    // Query transaction details (e.g., from database or external service)
+    res.status(200).json({
+      success: true,
+      message: 'Transaction details retrieved successfully',
+      data: { reference }, // Replace with actual transaction data
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error querying transaction details',
+      error: error.message,
+    });
+  }
+});
+
+// Endpoint to handle the callback from Jenga
+app.post('/callback', (req, res) => {
+  const {
+    transactionId,
+    status,
+    date,
+    desc,
+    amount,
+    orderReference,
+    hash,
+    extraData,
+  } = req.body;
+
+  try {
+    // Validate the response hash
+    const expectedSignature = crypto
+      .createHash('sha256')
+      .update(
+        `${process.env.MERCHANT_CODE}${orderReference}KES${amount}http://localhost:3000/callback`
+      )
+      .digest('hex');
+
+    if (expectedSignature !== hash) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid response signature' });
+    }
+
+    // Handle the callback data (e.g., update database or notify user)
+    res.json({
+      success: true,
+      message: 'Callback received successfully',
+      data: {
+        transactionId,
+        status,
+        date,
+        desc,
+        amount,
+        orderReference,
+        extraData,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error handling callback',
+      error: error.message,
+    });
+  }
+});
+
+// Start the server
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
